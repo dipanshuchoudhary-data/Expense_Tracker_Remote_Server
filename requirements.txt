@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+fastmcp
+langgraph
+langchain-openai
+asyncpg
+python-dotenv
