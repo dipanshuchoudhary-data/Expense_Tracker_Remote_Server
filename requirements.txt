@@ -1,7 +1,5 @@
-fastapi
-uvicorn
 fastmcp
+supabase
 langgraph
 langchain-openai
-asyncpg
 python-dotenv
