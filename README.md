@@ -1,35 +1,24 @@
-﻿# Expense_Tracker_Remote_Server
-
 Expense Tracker Remote MCP Server
 
-A production-style remote MCP (Model Context Protocol) server built with fastmcp, deployed on Google Cloud Run, and backed by Supabase for persistent storage.
+A cloud-deployed remote MCP (Model Context Protocol) server built with fastmcp and backed by Supabase.
+This service is designed to plug into an external chatbot as a remote capability layer, not as a standalone application.
 
-This service is designed to be plugged into an external chatbot as a remote tool server, not as a standalone product.
-
-It exposes MCP tools over SSE for:
-
-Chat persistence
-
-Conversation history
-
-Expense-related operations
-
-Future agent extensions
+It runs as a stateless microservice and exposes structured tools over SSE, enabling a chatbot to persist data, manage conversations, and perform expense-related operations through a secure, scalable backend.
 
 🚀 What This Service Does
 
-This server acts as a remote capability layer for a chatbot.
+This server acts as a remote tool and memory service for a chatbot.
 
-Architecture:
+High-level architecture:
 
-Chatbot (local / hosted)
+Chatbot (local or hosted)
         ↓
 Remote MCP Server (Cloud Run)
         ↓
-Supabase (Postgres database)
+Supabase (PostgreSQL database)
 
 
-Responsibilities:
+Core responsibilities:
 
 Accept MCP connections over SSE
 
@@ -37,31 +26,31 @@ Expose structured tools to the chatbot
 
 Persist and retrieve data from Supabase
 
-Enforce safe startup and configuration
+Enforce safe startup through environment validation
 
 Run as a stateless, horizontally scalable service
 
-🧩 Key Features
+🧩 Key Capabilities
 
 Remote MCP server using fastmcp
 
-Cloud-native container deployment (Cloud Run)
+Cloud-native container deployment
 
-Supabase-backed persistence
+Supabase-backed persistence layer
 
-Environment-secured configuration
+Secure environment-based configuration
 
-Designed for multi-user expansion
+Designed for multi-user and agentic system expansion
 
-Compatible with agentic systems and tool calling
+Built to integrate cleanly with external chatbots
 
 🛠 Tech Stack
 
 Python 3.12
 
-fastmcp
+fastmcp (remote MCP server)
 
-Supabase Python SDK
+Supabase (PostgreSQL)
 
 LangGraph
 
