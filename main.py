@@ -19,7 +19,7 @@ supabase: Client = create_client(SUPABASE_URL,SUPABASE_KEY)
 
 
 model = ChatOpenAI(
-    model_name="mistralai/mistral-7b-instruct",
+    model_name="openai/gpt-oss-120b",
     openai_api_base="https://openrouter.ai/api/v1",
     openai_api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0.7
@@ -132,6 +132,40 @@ def extract_expenses(thread_id: str):
         return {"expenses": model.invoke(prompt).content}
 
 
+# =========================================================
+# ✅ UPGRADE: expense storage tool (MANDATORY)
+# =========================================================
+
+@mcp.tool()
+async def add_expense(
+    amount: float,
+    category: str,
+    description: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+):
+    payload = {
+        "amount": amount,
+        "category": category,
+        "description": description,
+        "thread_id": thread_id,
+        "user_id": user_id,
+    }
+
+    payload = {k: v for k, v in payload.items() if v is not None}
+
+    result = supabase.table("expenses").insert(payload).execute()
+
+    if not result.data:
+        raise RuntimeError("Failed to insert expense")
+
+    return {
+        "status": "saved",
+        "amount": amount,
+        "category": category,
+    }
+
+
 if __name__ == "__main__":
     logging.info("Starting remote MCP server...")
 
@@ -142,5 +176,3 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port
     )
-
-
