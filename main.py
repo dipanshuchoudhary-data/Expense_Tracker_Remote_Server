@@ -5,6 +5,7 @@ from typing import TypedDict, List, Optional
 from dotenv import load_dotenv
 from supabase import create_client, Client
 import uuid, os, logging
+from datetime import datetime, timedelta, timezone
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -17,7 +18,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-
 # ---------------------------------------------------------
 # LLM
 # ---------------------------------------------------------
@@ -29,7 +29,6 @@ model = ChatOpenAI(
     temperature=0.7,
 )
 
-
 # ---------------------------------------------------------
 # State
 # ---------------------------------------------------------
@@ -40,153 +39,35 @@ class ChatState(TypedDict):
     thread_id: str
     user_id: str
 
-
 # ---------------------------------------------------------
-# DB helpers (ALL USER SCOPED)
+# Helpers
 # ---------------------------------------------------------
 
-def save_message(
-    *,
-    user_id: str,
-    thread_id: str,
-    role: str,
-    content: str,
-):
+def require_user(user_id: str):
     if not user_id:
         raise RuntimeError("Unauthorized")
 
-    supabase.table("chat_messages").insert({
-        "user_id": user_id,
-        "thread_id": thread_id,
-        "role": role,
-        "content": content,
-    }).execute()
+def fetch_expense_by_index(user_id: str, index: int, thread_id: Optional[str]):
+    require_user(user_id)
 
-
-def load_history(
-    *,
-    user_id: str,
-    thread_id: str,
-):
-    if not user_id:
-        raise RuntimeError("Unauthorized")
-
-    res = (
-        supabase.table("chat_messages")
-        .select("role,content")
+    q = (
+        supabase.table("expenses")
+        .select("*")
         .eq("user_id", user_id)
-        .eq("thread_id", thread_id)
-        .order("created_at")
-        .execute()
+        .order("created_at", desc=True)
+        .limit(index + 1)
     )
 
-    return res.data or []
+    if thread_id:
+        q = q.eq("thread_id", thread_id)
 
+    res = q.execute()
+    rows = res.data or []
 
-def clear_thread(
-    *,
-    user_id: str,
-    thread_id: str,
-):
-    if not user_id:
-        raise RuntimeError("Unauthorized")
+    if len(rows) <= index:
+        return None
 
-    supabase.table("chat_messages") \
-        .delete() \
-        .eq("user_id", user_id) \
-        .eq("thread_id", thread_id) \
-        .execute()
-
-
-# ---------------------------------------------------------
-# Graph nodes
-# ---------------------------------------------------------
-
-def add_user_input(state: ChatState):
-    state["messages"].append(
-        {"role": "user", "content": state["user_input"]}
-    )
-    return state
-
-
-def get_response(state: ChatState):
-    try:
-        reply = model.invoke(state["messages"]).content
-    except Exception as e:
-        logging.error(f"LLM error: {e}")
-        reply = "System error. Please retry."
-
-    save_message(
-        user_id=state["user_id"],
-        thread_id=state["thread_id"],
-        role="user",
-        content=state["messages"][-1]["content"],
-    )
-
-    save_message(
-        user_id=state["user_id"],
-        thread_id=state["thread_id"],
-        role="assistant",
-        content=reply,
-    )
-
-    state["messages"].append(
-        {"role": "assistant", "content": reply}
-    )
-
-    return state
-
-
-# ---------------------------------------------------------
-# Graph
-# ---------------------------------------------------------
-
-graph = StateGraph(ChatState)
-graph.add_node("add_user_input", add_user_input)
-graph.add_node("get_response", get_response)
-
-graph.add_edge(START, "add_user_input")
-graph.add_edge("add_user_input", "get_response")
-graph.add_edge("get_response", END)
-
-workflow = graph.compile()
-
-
-# ---------------------------------------------------------
-# Engine
-# ---------------------------------------------------------
-
-def chat_engine(
-    *,
-    user_input: str,
-    user_id: str,
-    thread_id: Optional[str] = None,
-):
-    if not user_id:
-        raise RuntimeError("Unauthorized")
-
-    if not thread_id:
-        thread_id = str(uuid.uuid4())
-
-    history = load_history(
-        user_id=user_id,
-        thread_id=thread_id,
-    )
-
-    state: ChatState = {
-        "user_input": user_input,
-        "messages": history,
-        "thread_id": thread_id,
-        "user_id": user_id,
-    }
-
-    result = workflow.invoke(state)
-
-    return {
-        "thread_id": thread_id,
-        "reply": result["messages"][-1]["content"],
-    }
-
+    return rows[index]
 
 # ---------------------------------------------------------
 # MCP server
@@ -194,100 +75,12 @@ def chat_engine(
 
 mcp = FastMCP("Expense_mcp_remote")
 
-
-# ---------------------------------------------------------
-# Health
-# ---------------------------------------------------------
-
 @mcp.tool()
 def health():
     return {"status": "ok"}
 
-
 # ---------------------------------------------------------
-# Chat tools (ALL REQUIRE user_id)
-# ---------------------------------------------------------
-
-@mcp.tool()
-def chat(
-    user_input: str,
-    user_id: str,
-    thread_id: Optional[str] = None,
-):
-    return chat_engine(
-        user_input=user_input,
-        user_id=user_id,
-        thread_id=thread_id,
-    )
-
-
-@mcp.tool()
-def history(
-    user_id: str,
-    thread_id: str,
-):
-    return load_history(
-        user_id=user_id,
-        thread_id=thread_id,
-    )
-
-
-@mcp.tool()
-def clear(
-    user_id: str,
-    thread_id: str,
-):
-    clear_thread(
-        user_id=user_id,
-        thread_id=thread_id,
-    )
-    return {"cleared": thread_id}
-
-
-# ---------------------------------------------------------
-# Intelligence tools (USER SCOPED)
-# ---------------------------------------------------------
-
-@mcp.tool()
-def summarize(
-    user_id: str,
-    thread_id: str,
-):
-    history = load_history(
-        user_id=user_id,
-        thread_id=thread_id,
-    )
-
-    prompt = [
-        {"role": "system", "content": "Summarize this conversation clearly."}
-    ] + history
-
-    return {
-        "summary": model.invoke(prompt).content
-    }
-
-
-@mcp.tool()
-def extract_expenses(
-    user_id: str,
-    thread_id: str,
-):
-    history = load_history(
-        user_id=user_id,
-        thread_id=thread_id,
-    )
-
-    prompt = [
-        {"role": "system", "content": "Extract expenses as structured JSON."}
-    ] + history
-
-    return {
-        "expenses": model.invoke(prompt).content
-    }
-
-
-# ---------------------------------------------------------
-# Expense storage tool (MANDATORY user isolation)
+# Expense creation
 # ---------------------------------------------------------
 
 @mcp.tool()
@@ -298,8 +91,7 @@ async def add_expense(
     description: Optional[str] = None,
     thread_id: Optional[str] = None,
 ):
-    if not user_id:
-        raise RuntimeError("Unauthorized")
+    require_user(user_id)
 
     payload = {
         "user_id": user_id,
@@ -311,20 +103,187 @@ async def add_expense(
 
     payload = {k: v for k, v in payload.items() if v is not None}
 
-    result = supabase.table("expenses").insert(payload).execute()
+    res = supabase.table("expenses").insert(payload).execute()
 
-    if not result.data:
-        raise RuntimeError("Failed to insert expense")
+    if not res.data:
+        raise RuntimeError("Insert failed")
 
     return {
         "status": "saved",
-        "amount": amount,
-        "category": category,
+        "expense": res.data[0],
     }
 
+# ---------------------------------------------------------
+# DELETE
+# ---------------------------------------------------------
+
+@mcp.tool()
+async def delete_expense_by_index(
+    index: int,
+    user_id: str,
+    thread_id: Optional[str] = None,
+):
+    expense = fetch_expense_by_index(user_id, index, thread_id)
+    if not expense:
+        return {"status": "not_found"}
+
+    supabase.table("expenses").delete().eq("id", expense["id"]).execute()
+
+    return {
+        "status": "deleted",
+        "expense_id": expense["id"],
+        "index": index,
+    }
+
+@mcp.tool()
+async def delete_expense_by_id(
+    expense_id: str,
+    user_id: str,
+):
+    require_user(user_id)
+
+    res = (
+        supabase.table("expenses")
+        .delete()
+        .eq("id", expense_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+    if not res.data:
+        return {"status": "not_found"}
+
+    return {
+        "status": "deleted",
+        "expense_id": expense_id,
+    }
 
 # ---------------------------------------------------------
-# Entry point
+# UPDATE
+# ---------------------------------------------------------
+
+@mcp.tool()
+async def update_expense_by_index(
+    index: int,
+    new_amount: Optional[float],
+    new_category: Optional[str],
+    new_description: Optional[str],
+    user_id: str,
+    thread_id: Optional[str] = None,
+):
+    expense = fetch_expense_by_index(user_id, index, thread_id)
+    if not expense:
+        return {"status": "not_found"}
+
+    update_payload = {}
+    if new_amount is not None:
+        update_payload["amount"] = new_amount
+    if new_category is not None:
+        update_payload["category"] = new_category
+    if new_description is not None:
+        update_payload["description"] = new_description
+
+    if not update_payload:
+        return {"status": "no_changes"}
+
+    supabase.table("expenses").update(update_payload).eq("id", expense["id"]).execute()
+
+    return {
+        "status": "updated",
+        "expense_id": expense["id"],
+        "updated_fields": update_payload,
+    }
+
+@mcp.tool()
+async def update_expense_by_id(
+    expense_id: str,
+    user_id: str,
+    new_amount: Optional[float] = None,
+    new_category: Optional[str] = None,
+    new_description: Optional[str] = None,
+):
+    require_user(user_id)
+
+    update_payload = {}
+    if new_amount is not None:
+        update_payload["amount"] = new_amount
+    if new_category is not None:
+        update_payload["category"] = new_category
+    if new_description is not None:
+        update_payload["description"] = new_description
+
+    if not update_payload:
+        return {"status": "no_changes"}
+
+    res = (
+        supabase.table("expenses")
+        .update(update_payload)
+        .eq("id", expense_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+    if not res.data:
+        return {"status": "not_found"}
+
+    return {
+        "status": "updated",
+        "expense_id": expense_id,
+        "updated_fields": update_payload,
+    }
+
+# ---------------------------------------------------------
+# SUMMARY
+# ---------------------------------------------------------
+
+@mcp.tool()
+async def expense_summary_by_period(
+    value: int,
+    unit: str,
+    user_id: str,
+    thread_id: Optional[str] = None,
+):
+    require_user(user_id)
+
+    now = datetime.now(timezone.utc)
+    unit = unit.lower()
+
+    if unit == "days":
+        since = now - timedelta(days=value)
+    elif unit == "weeks":
+        since = now - timedelta(weeks=value)
+    elif unit == "months":
+        since = now - timedelta(days=value * 30)
+    else:
+        raise ValueError("Invalid unit")
+
+    q = (
+        supabase.table("expenses")
+        .select("amount,category")
+        .eq("user_id", user_id)
+        .gte("created_at", since.isoformat())
+    )
+
+    if thread_id:
+        q = q.eq("thread_id", thread_id)
+
+    rows = q.execute().data or []
+
+    total = sum(float(r["amount"]) for r in rows)
+    by_category = {}
+
+    for r in rows:
+        by_category[r["category"]] = by_category.get(r["category"], 0) + float(r["amount"])
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "total": total,
+        "by_category": by_category,
+    }
+
+# ---------------------------------------------------------
+# Entry
 # ---------------------------------------------------------
 
 if __name__ == "__main__":
