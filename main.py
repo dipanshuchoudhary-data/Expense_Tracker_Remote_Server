@@ -1,6 +1,5 @@
 from fastmcp import FastMCP
 from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, List, Optional
 from dotenv import load_dotenv
 from supabase import create_client, Client
